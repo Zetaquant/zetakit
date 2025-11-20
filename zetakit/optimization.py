@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Literal, Optional
-from scipy import linalg
+from scipy.linalg import cho_factor, cho_solve
 
 
 def time_series_cv_indices(n_samples: int,
@@ -184,64 +184,17 @@ def time_series_cv_split(data: pd.DataFrame,
             for train_idx, test_idx in indices_splits]
 
 
-def robust_cholesky(matrix: np.ndarray, 
-                     regularization: float = 0.0,
-                     max_attempts: int = 10) -> Tuple[np.ndarray, bool]:
-    """
-    Compute Cholesky decomposition with automatic regularization for non-positive-definite matrices.
-    
-    Parameters:
-    -----------
-    matrix : np.ndarray
-        Symmetric matrix to decompose
-    regularization : float, default 1e-8
-        Initial regularization to add to diagonal
-    max_attempts : int, default 10
-        Maximum number of regularization attempts
-        
-    Returns:
-    --------
-    L : np.ndarray
-        Lower triangular Cholesky factor
-    success : bool
-        True if Cholesky succeeded, False if eigenvalue decomposition was used
-    """
-    matrix = np.asarray(matrix, dtype=float)
-    
-    # Ensure symmetry
-    matrix = (matrix + matrix.T) / 2
-    
-    reg = regularization
-    for attempt in range(max_attempts):
-        try:
-            # Try Cholesky decomposition
-            L = linalg.cholesky(matrix + reg * np.eye(matrix.shape[0]), lower=True)
-            return L, True
-        except linalg.LinAlgError:
-            # Increase regularization and try again
-            reg *= 10
-    
-    # If Cholesky fails, use eigenvalue decomposition
-    eigenvals, eigenvecs = linalg.eigh(matrix)
-    # Ensure all eigenvalues are positive
-    eigenvals = np.maximum(eigenvals, regularization)
-    L = eigenvecs @ np.diag(np.sqrt(eigenvals))
-    return L, False
-
-
 def mean_variance_optimization(expected_returns: np.ndarray,
                                covariance: np.ndarray,
                                risk_penalty: float = 1.0,
-                               ridge_penalty: float = 0.0,
-                               long_only: bool = False,
-                               robust_chol_regularization: float = 0.0) -> np.ndarray:
+                               ridge_penalty: float = 0.0) -> np.ndarray:
     """
-    Solve the penalized mean-variance optimization problem.
+    Solve the penalized mean-variance optimization problem (long-short).
     
     Maximizes: μ^T w - (λ/2) * w^T Σ w - (α/2) * ||w||^2
-    Subject to: sum(w) = 1, and optionally w >= 0 (long-only)
+    Subject to: sum(w) = 1
     
-    Uses robust Cholesky decomposition to handle non-positive-definite covariance matrices.
+    Uses Cholesky decomposition via cho_factor/cho_solve for efficient solution.
     
     Parameters:
     -----------
@@ -253,16 +206,11 @@ def mean_variance_optimization(expected_returns: np.ndarray,
         Risk aversion parameter (λ). Higher values penalize risk more.
     ridge_penalty : float, default 0.0
         L2 regularization parameter (α). Helps stabilize solution.
-    long_only : bool, default False
-        If True, enforce non-negative weights constraint (w >= 0).
-        If False, allows short positions.
-    robust_chol_regularization : float, default 1e-8
-        Regularization parameter for robust Cholesky decomposition
         
     Returns:
     --------
     weights : np.ndarray
-        Optimal portfolio weights (n_assets,)
+        Optimal portfolio weights (n_assets,) normalized to sum to 1
         
     Examples:
     --------
@@ -295,77 +243,23 @@ def mean_variance_optimization(expected_returns: np.ndarray,
     covariance = (covariance + covariance.T) / 2
     
     # Build the regularized covariance matrix: λΣ + αI
-    regularized_cov = risk_penalty * covariance + ridge_penalty * np.eye(n_assets)
+    A = risk_penalty * covariance + ridge_penalty * np.eye(n_assets)
     
-    if long_only:
-        # For long-only constraint, use quadratic programming solver
-        # This is a more complex problem, so we'll use scipy.optimize
-        try:
-            from scipy.optimize import minimize
-            
-            # Objective function: -μ^T w + (1/2) * w^T (λΣ + αI) w
-            def objective(w):
-                return -expected_returns @ w + 0.5 * w @ regularized_cov @ w
-            
-            # Constraints: sum(w) = 1
-            constraints = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
-            
-            # Bounds: w >= 0
-            bounds = [(0, None) for _ in range(n_assets)]
-            
-            # Initial guess: equal weights
-            x0 = np.ones(n_assets) / n_assets
-            
-            # Solve
-            result = minimize(objective, x0, method='SLSQP', 
-                            bounds=bounds, constraints=constraints,
-                            options={'ftol': 1e-9, 'disp': False})
-            
-            if not result.success:
-                raise RuntimeError(f"Optimization failed: {result.message}")
-            
-            weights = result.x
-            # Normalize to ensure sum = 1 (numerical precision)
-            weights = weights / np.sum(np.abs(weights))
-            
-        except ImportError:
-            raise ImportError(
-                "scipy.optimize is required for long-only optimization. "
-                "Install with: pip install scipy"
-            )
-    else:
-        # Unconstrained optimization (allows short positions)
-        # Analytical solution using Lagrange multipliers
-        
-        # Compute robust Cholesky decomposition
-        L, chol_success = robust_cholesky(regularized_cov, robust_chol_regularization)
-        
-        # Solve the system: (λΣ + αI)w = μ - γ1
-        # where γ is the Lagrange multiplier for sum(w) = 1
-        
-        # Let A = (λΣ + αI), then we solve:
-        # A w = μ - γ 1
-        # 1^T w = 1
-        
-        # This gives: γ = (1^T A^{-1} μ - 1) / (1^T A^{-1} 1)
-        # and: w = A^{-1} (μ - γ 1)
-        
-        # Solve A x = μ and A x = 1 using Cholesky
-        mu_solve = linalg.solve_triangular(L, expected_returns, lower=True)
-        mu_solve = linalg.solve_triangular(L.T, mu_solve, lower=False)
-        
-        ones = np.ones(n_assets)
-        ones_solve = linalg.solve_triangular(L, ones, lower=True)
-        ones_solve = linalg.solve_triangular(L.T, ones_solve, lower=False)
-        
-        # Compute Lagrange multiplier
-        gamma = (np.sum(mu_solve) - 1) / np.sum(ones_solve)
-        
-        # Compute optimal weights
-        weights = mu_solve - gamma * ones_solve
-        
-        # Normalize to ensure sum = 1 (numerical precision)
-        weights = weights / np.sum(np.abs(weights))
+    # Ensure positive definiteness by adding small regularization if needed
+    # This handles cases where covariance might not be positive definite
+    try:
+        c, lower = cho_factor(A)
+    except np.linalg.LinAlgError:
+        # If Cholesky fails, add regularization to diagonal
+        A = A + 1e-8 * np.eye(n_assets)
+        c, lower = cho_factor(A)
+    
+    # Solve: (λΣ + αI)w = μ
+    # This gives the unconstrained solution
+    weights = cho_solve((c, lower), expected_returns)
+    
+    # Normalize to satisfy sum(w) = 1 constraint
+    weights = weights / np.sum(np.abs(weights))
     
     return weights
 
