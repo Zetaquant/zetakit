@@ -221,132 +221,138 @@ def plot_scatter(x: Union[np.ndarray, pd.Series],
 
 def plot_binned_scatter(x: Union[np.ndarray, pd.Series],
                         y: Union[np.ndarray, pd.Series],
-                        bins: int = 20,
-                        bin_method: Literal['equal', 'percentile'] = 'equal',
-                        xlabel: str = 'X',
-                        ylabel: str = 'Y',
-                        title: str = 'Binned Scatter Plot',
+                        bins: int = 10,
+                        xlabel: str = 'X Percentile Bin',
+                        ylabel: str = 'Mean Y',
+                        title: str = 'Mean Y by X Percentile Bin',
                         figsize: tuple = (10, 6),
-                        confidence_level: float = 0.95,
-                        show_points: bool = True,
-                        point_alpha: float = 0.3,
-                        point_size: float = 10):
+                        color: str = 'steelblue',
+                        edgecolor: str = 'white',
+                        alpha: float = 0.8):
     """
-    Plot a binned scatter plot showing mean and confidence intervals for y within x bins.
+    Plot mean of y values within each percentile bin of x values as a bar chart.
+    
+    Bins x values into percentiles (e.g., deciles) and plots the mean of y
+    in each bin. This is useful for analyzing relationships between variables
+    when x has a non-uniform distribution.
     
     Parameters:
     -----------
     x : np.ndarray or pd.Series
-        X-axis data (will be binned)
+        X-axis data (will be binned into percentiles)
     y : np.ndarray or pd.Series
-        Y-axis data (mean and CI computed per bin)
-    bins : int, default 20
-        Number of bins
-    bin_method : {'equal', 'percentile'}, default 'equal'
-        'equal': Equal-width bins
-        'percentile': Equal-size bins based on percentiles
-    xlabel : str, default 'X'
+        Y-axis data (mean computed per bin)
+    bins : int, default 10
+        Number of percentile bins (e.g., 10 for deciles)
+    xlabel : str, default 'X Percentile Bin'
         Label for x-axis
-    ylabel : str, default 'Y'
+    ylabel : str, default 'Mean Y'
         Label for y-axis
-    title : str, default 'Binned Scatter Plot'
+    title : str, default 'Mean Y by X Percentile Bin'
         Plot title
     figsize : tuple, default (10, 6)
         Figure size (width, height)
-    confidence_level : float, default 0.95
-        Confidence level for intervals (0-1)
-    show_points : bool, default True
-        Whether to show individual points
-    point_alpha : float, default 0.3
-        Transparency for points
-    point_size : float, default 10
-        Size of points
+    color : str, default 'steelblue'
+        Bar color
+    edgecolor : str, default 'white'
+        Bar edge color
+    alpha : float, default 0.8
+        Bar transparency
         
     Returns:
     --------
     fig : matplotlib.figure.Figure
         Figure object
+        
+    Examples:
+    --------
+    >>> x = np.random.randn(1000)
+    >>> y = x + np.random.randn(1000) * 0.5
+    >>> fig = plot_binned_scatter(x, y, bins=10)
     """
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Convert to numpy arrays if needed
-    if isinstance(x, pd.Series):
-        x = x.values
-    if isinstance(y, pd.Series):
-        y = y.values
+    # Convert to pandas Series for easier handling
+    if isinstance(x, np.ndarray):
+        x = pd.Series(x)
+    if isinstance(y, np.ndarray):
+        y = pd.Series(y)
+    
+    # Ensure same index
+    if not x.index.equals(y.index):
+        # If different indices, align them
+        common_idx = x.index.intersection(y.index)
+        x = x.loc[common_idx]
+        y = y.loc[common_idx]
     
     # Remove NaN values
-    mask = ~(np.isnan(x) | np.isnan(y))
-    x_clean = x[mask]
-    y_clean = y[mask]
+    valid_idx = x.dropna().index.intersection(y.dropna().index)
+    x_valid = x.loc[valid_idx]
+    y_valid = y.loc[valid_idx]
     
-    # Create bins
-    if bin_method == 'equal':
-        bin_edges = np.linspace(x_clean.min(), x_clean.max(), bins + 1)
-    elif bin_method == 'percentile':
-        bin_edges = np.percentile(x_clean, np.linspace(0, 100, bins + 1))
+    if len(x_valid) == 0:
+        raise ValueError("No valid data points after removing NaN values")
+    
+    # Compute percentile bin edges
+    percentiles = np.linspace(0, 100, bins + 1)
+    bin_edges = np.percentile(x_valid, percentiles)
+    # Ensure right-most items are included
+    bin_edges[-1] += 1e-12
+    
+    # Create bin labels
+    bin_labels = [f"P{i+1}" for i in range(bins)]
+    
+    # Bin the data using pd.cut
+    binned = pd.cut(x_valid, bins=bin_edges, labels=bin_labels, include_lowest=True)
+    
+    # Compute mean of y in each bin
+    bin_means = (
+        pd.DataFrame({
+            "bin": binned,
+            "y": y_valid
+        })
+        .groupby("bin", observed=True)["y"]
+        .mean()
+    )
+    
+    # Create color gradient for bars (optional enhancement)
+    # Use gradient if color is None, otherwise use single color
+    if color is None:
+        colors = plt.cm.viridis(np.linspace(0, 1, len(bin_means)))
     else:
-        raise ValueError(f"bin_method must be 'equal' or 'percentile', got {bin_method}")
+        colors = color
     
-    # Assign data to bins
-    bin_indices = np.digitize(x_clean, bin_edges) - 1
-    # Handle edge case where value equals max
-    bin_indices[bin_indices == bins] = bins - 1
+    # Plot bars
+    bars = ax.bar(range(len(bin_means)), bin_means.values, 
+                  color=colors, edgecolor=edgecolor, 
+                  linewidth=1.5, alpha=alpha)
     
-    # Compute statistics for each bin
-    bin_centers = []
-    bin_means = []
-    bin_stds = []
-    bin_counts = []
-    bin_lower = []
-    bin_upper = []
+    # Customize appearance
+    ax.set_xticks(range(len(bin_means)))
+    ax.set_xticklabels(bin_means.index, rotation=0, ha='center')
+    ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
+    ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
     
-    for i in range(bins):
-        mask_bin = bin_indices == i
-        if np.sum(mask_bin) > 0:
-            y_bin = y_clean[mask_bin]
-            bin_centers.append((bin_edges[i] + bin_edges[i+1]) / 2)
-            bin_means.append(np.mean(y_bin))
-            bin_stds.append(np.std(y_bin))
-            bin_counts.append(len(y_bin))
-            
-            # Compute confidence interval
-            if len(y_bin) > 1:
-                sem = stats.sem(y_bin)
-                t_crit = stats.t.ppf((1 + confidence_level) / 2, len(y_bin) - 1)
-                margin = t_crit * sem
-                bin_lower.append(bin_means[-1] - margin)
-                bin_upper.append(bin_means[-1] + margin)
-            else:
-                bin_lower.append(bin_means[-1])
-                bin_upper.append(bin_means[-1])
+    # Add grid
+    ax.grid(True, alpha=0.3, linestyle='--', axis='y', zorder=0)
+    ax.set_axisbelow(True)
     
-    bin_centers = np.array(bin_centers)
-    bin_means = np.array(bin_means)
-    bin_lower = np.array(bin_lower)
-    bin_upper = np.array(bin_upper)
+    # Add zero line if needed
+    if bin_means.min() < 0 < bin_means.max():
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8, zorder=1)
     
-    # Plot individual points if requested
-    if show_points:
-        ax.scatter(x_clean, y_clean, alpha=point_alpha, s=point_size, 
-                  color='lightgray', edgecolors='none', zorder=1)
+    # Add value labels on bars (optional)
+    for i, (bar, val) in enumerate(zip(bars, bin_means.values)):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.3f}',
+                ha='center', va='bottom' if height >= 0 else 'top',
+                fontsize=9, fontweight='bold')
     
-    # Plot confidence intervals
-    ax.fill_between(bin_centers, bin_lower, bin_upper, 
-                    alpha=0.3, color='steelblue', label=f'{confidence_level*100:.0f}% CI', zorder=2)
-    
-    # Plot means
-    ax.plot(bin_centers, bin_means, 'o-', color='steelblue', 
-           linewidth=2, markersize=8, label='Mean', zorder=3)
-    
-    ax.set_xlabel(xlabel, fontsize=12)
-    ax.set_ylabel(ylabel, fontsize=12)
-    title_suffix = f" ({bin_method} bins)"
-    ax.set_title(title + title_suffix, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(fontsize=10)
-    
+    # Improve layout
     plt.tight_layout()
+    
     return fig
 
 
