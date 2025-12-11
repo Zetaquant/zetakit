@@ -342,14 +342,6 @@ def plot_binned_scatter(x: Union[np.ndarray, pd.Series],
     if bin_means.min() < 0 < bin_means.max():
         ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8, zorder=1)
     
-    # Add value labels on bars (optional)
-    for i, (bar, val) in enumerate(zip(bars, bin_means.values)):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{val:.3f}',
-                ha='center', va='bottom' if height >= 0 else 'top',
-                fontsize=9, fontweight='bold')
-    
     # Improve layout
     plt.tight_layout()
     
